@@ -35,26 +35,36 @@ from lab22 import data as D
 C.ensure_dirs()
 print(C.summary())
 
-# Only the tokenizer is needed here: chat template + length budget. No GPU.
+PREF_EXISTS = (C.PREF_DIR / "train.parquet").exists() and (C.SCREENSHOTS / "02b-pref-length.png").exists()
+if PREF_EXISTS:
+    print(f"==> [SKIP NB2] Du lieu so thich da co san tai {C.PREF_DIR}!")
+
 tokenizer = AutoTokenizer.from_pretrained(C.BASE_MODEL)
 
 # %% [markdown]
 # ## 1. Nạp, lọc, chia huấn luyện/eval theo câu hỏi
 
 # %%
-train_ds, eval_ds = D.load_preference_pairs(
-    C.PREF_DATASET,
-    tokenizer,
-    max_len=C.MAX_LEN,
-    n_train=C.PREF_TRAIN,
-    n_eval=C.PREF_EVAL,
-    language=C.PREF_LANGUAGE or None,
-    seed=C.SEED,
-    template_kwargs=C.CHAT_TEMPLATE_KWARGS,
-)
-D.assert_disjoint(list(train_ds), list(eval_ds))
-print(f"train={len(train_ds)}  eval={len(eval_ds)}  (no prompt overlap)")
-print(train_ds[0])
+if PREF_EXISTS:
+    from datasets import Dataset
+
+    train_ds = Dataset.from_parquet(str(C.PREF_DIR / "train.parquet"))
+    eval_ds = Dataset.from_parquet(str(C.PREF_DIR / "eval.parquet"))
+    print(f"Loaded existing train={len(train_ds)}  eval={len(eval_ds)}")
+else:
+    train_ds, eval_ds = D.load_preference_pairs(
+        C.PREF_DATASET,
+        tokenizer,
+        max_len=C.MAX_LEN,
+        n_train=C.PREF_TRAIN,
+        n_eval=C.PREF_EVAL,
+        language=C.PREF_LANGUAGE or None,
+        seed=C.SEED,
+        template_kwargs=C.CHAT_TEMPLATE_KWARGS,
+    )
+    D.assert_disjoint(list(train_ds), list(eval_ds))
+    print(f"train={len(train_ds)}  eval={len(eval_ds)}  (no prompt overlap)")
+    print(train_ds[0])
 
 # %% [markdown]
 # ## 2. Thiên vị độ dài
@@ -72,33 +82,40 @@ print(f"chosen median {stats['chosen_median']:.0f} tok · rejected median {stats
 print(f"chosen longer in {stats['chosen_longer_frac']:.1%} of pairs")
 
 # %%
-import matplotlib.pyplot as plt
-import numpy as np
+if not PREF_EXISTS:
+    import matplotlib.pyplot as plt
+    import numpy as np
 
-chosen = np.array([n_tokens(r["chosen"][0]["content"]) for r in train_ds])
-rejected = np.array([n_tokens(r["rejected"][0]["content"]) for r in train_ds])
-fig, ax = plt.subplots(figsize=(8, 3.5))
-bins = np.linspace(0, C.MAX_LEN, 40)
-ax.hist(chosen, bins=bins, alpha=0.6, label="chosen", color="#2e548a")
-ax.hist(rejected, bins=bins, alpha=0.6, label="rejected", color="#c83538")
-ax.set_xlabel("response tokens")
-ax.set_title(f"Length: chosen longer in {stats['chosen_longer_frac']:.0%} of pairs")
-ax.legend()
-fig.savefig(C.SCREENSHOTS / "02b-pref-length.png", dpi=120, bbox_inches="tight")
-plt.show()
+    chosen = np.array([n_tokens(r["chosen"][0]["content"]) for r in train_ds])
+    rejected = np.array([n_tokens(r["rejected"][0]["content"]) for r in train_ds])
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+    bins = np.linspace(0, C.MAX_LEN, 40)
+    ax.hist(chosen, bins=bins, alpha=0.6, label="chosen", color="#2e548a")
+    ax.hist(rejected, bins=bins, alpha=0.6, label="rejected", color="#c83538")
+    ax.set_xlabel("response tokens")
+    ax.set_title(f"Length: chosen longer in {stats['chosen_longer_frac']:.0%} of pairs")
+    ax.legend()
+    fig.savefig(C.SCREENSHOTS / "02b-pref-length.png", dpi=120, bbox_inches="tight")
+    plt.show()
 
 # %% [markdown]
 # ## 3. Lưu
 
 # %%
-import json
+if not PREF_EXISTS:
+    import json
 
-train_ds.to_parquet(str(C.PREF_DIR / "train.parquet"))
-eval_ds.to_parquet(str(C.PREF_DIR / "eval.parquet"))
-(C.PREF_DIR / "stats.json").write_text(
-    json.dumps({"dataset": C.PREF_DATASET, "language": C.PREF_LANGUAGE, **stats}, ensure_ascii=False, indent=2)
-)
-print(f"Saved {len(train_ds)} train / {len(eval_ds)} eval pairs → {C.PREF_DIR}")
+    train_ds.to_parquet(str(C.PREF_DIR / "train.parquet"))
+    eval_ds.to_parquet(str(C.PREF_DIR / "eval.parquet"))
+    (C.PREF_DIR / "stats.json").write_text(
+        json.dumps({"dataset": C.PREF_DATASET, "language": C.PREF_LANGUAGE, **stats}, ensure_ascii=False, indent=2)
+    )
+    print(f"Saved {len(train_ds)} train / {len(eval_ds)} eval pairs → {C.PREF_DIR}")
+else:
+    print(f"Da co san: {C.PREF_DIR}")
+
+if "sync_to_drive" in globals():
+    sync_to_drive("NB2_Preference_Data")
 
 # %% [markdown]
 # ## 4. Ghi chú vibe-coding

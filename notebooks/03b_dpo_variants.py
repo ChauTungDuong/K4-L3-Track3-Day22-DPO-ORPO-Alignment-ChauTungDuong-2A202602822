@@ -93,6 +93,8 @@ for name in [r for r in SELECTED if r in RUNS]:
     print(results[name])
     del trainer, model
     MD.cleanup()
+    if "sync_to_drive" in globals():
+        sync_to_drive(f"NB3b_{name}")
 
 # %% [markdown]
 # ## 2. ORPO (không reference)
@@ -138,6 +140,8 @@ if "orpo" in SELECTED:
     print(results["orpo"])
     del trainer, model
     MD.cleanup()
+    if "sync_to_drive" in globals():
+        sync_to_drive("NB3b_orpo")
 
 # %% [markdown]
 # ## 3. Bảng tổng hợp (sản phẩm nộp `03b-variants.png`)
@@ -159,6 +163,9 @@ axes[1].set_title("mean output length (chars)")
 fig.tight_layout()
 fig.savefig(C.SCREENSHOTS / "03b-variants.png", dpi=120, bbox_inches="tight")
 plt.show()
+
+if "sync_to_drive" in globals():
+    sync_to_drive("NB3b_all_variants")
 
 # %% [markdown]
 # ## 4. Câu hỏi cho REFLECTION

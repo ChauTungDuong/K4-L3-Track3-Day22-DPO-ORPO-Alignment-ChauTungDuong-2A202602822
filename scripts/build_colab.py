@@ -23,8 +23,8 @@ STAGES = [
     ("01_sft_mini", "core"),
     ("02_preference_data", "core"),
     ("03_dpo_train", "core"),
-    ("03b_dpo_variants", "bonus"),
     ("04_compare_and_eval", "core"),
+    ("03b_dpo_variants", "bonus"),
     ("05_merge_deploy_gguf", "bonus"),
     ("06_benchmark", "bonus"),
     ("07_grpo_bonus", "bonus"),
@@ -108,7 +108,12 @@ def render(tier: str) -> dict:
         md("## A. Setup"),
         code(
             "import os\n"
-            f'os.environ["COMPUTE_TIER"] = "{tier}"\n'
+            f'os.environ["COMPUTE_TIER"] = "{tier}"\n\n'
+            "# ==============================================================================\n"
+            "# FAST MODE: Rut ngan thoi gian tu 2 tieng xuong ~35-40 phut (tranh Colab disconnect):\n"
+            'os.environ["PREF_TRAIN"] = "200"   # 200 cap DPO (NB3 chay ~12-15 phut thay vi 50 phut)\n'
+            'os.environ["MAX_LEN"] = "512"       # Tiet kiem VRAM, tang toc sinh cau\n'
+            "# ==============================================================================\n"
             "# NB4 judges automatically with a panel of two local reward models (no key needed).\n"
             "# Optional API judge as a cross-check (two A/B orders):\n"
             '# os.environ["JUDGE_PROVIDER"] = "gemini"   # or "openai" / "anthropic"\n'
@@ -118,11 +123,52 @@ def render(tier: str) -> dict:
         ),
         code(f"!pip install -q {pins}" + (' "vllm>=0.10"' if big else "")),
         code(
-            "from pathlib import Path\n"
+            "import os\n"
+            "import shutil\n"
+            "from pathlib import Path\n\n"
+            "# Luon tao thu muc goc tren Colab de moi cell %%writefile chay khong bi loi:\n"
             f'WORK = Path("{WORKDIR}")\n'
             '(WORK / "lab22").mkdir(parents=True, exist_ok=True)\n'
             "os.chdir(WORK)\n"
-            "print(Path.cwd())"
+            "print(f'Workspace: {Path.cwd()}')\n\n"
+            "# ==============================================================================\n"
+            "# TU DONG KET NOI GOOGLE DRIVE & KHOI PHUC TIEN DO (RESUME)\n"
+            "# ==============================================================================\n"
+            'DRIVE_DIR = Path("/content/drive/MyDrive/K4_Lab22_KetQua")\n'
+            "try:\n"
+            "    from google.colab import drive\n"
+            '    drive.mount("/content/drive")\n'
+            "    DRIVE_DIR.mkdir(parents=True, exist_ok=True)\n"
+            "    print(f'==> Da ket noi Google Drive: {DRIVE_DIR}')\n"
+            "    restored = []\n"
+            "    for f in ['models', 'adapters', 'data', 'submission', 'gguf']:\n"
+            "        src = DRIVE_DIR / f\n"
+            "        dst = WORK / f\n"
+            "        if src.exists():\n"
+            "            shutil.copytree(src, dst, dirs_exist_ok=True)\n"
+            "            restored.append(f)\n"
+            "    if restored:\n"
+            "        print(f'==> [RESUME] Da khoi phuc cac thu muc tu Drive ve may ao: {', '.join(restored)}')\n"
+            "    else:\n"
+            "        print('==> Drive chua co checkpoint cu, bat dau chay moi.')\n"
+            "except Exception as e:\n"
+            "    print('==> Warning / Khong the ket noi Google Drive:', e)\n\n"
+            "def sync_to_drive(stage_name=''):\n"
+            "    try:\n"
+            '        if not Path("/content/drive/MyDrive").exists():\n'
+            "            return\n"
+            "        DRIVE_DIR.mkdir(parents=True, exist_ok=True)\n"
+            f'        w = Path("{WORKDIR}")\n'
+            "        synced = []\n"
+            "        for f in ['models', 'adapters', 'data', 'submission', 'gguf']:\n"
+            "            src = w / f\n"
+            "            dst = DRIVE_DIR / f\n"
+            "            if src.exists():\n"
+            "                shutil.copytree(src, dst, dirs_exist_ok=True)\n"
+            "                synced.append(f)\n"
+            "        print(f'==> [DRIVE SYNC OK] Da dong bo sang Drive: {\", \".join(synced)} (Buoc: {stage_name})')\n"
+            "    except Exception as e:\n"
+            "        print(f'==> [DRIVE SYNC ERROR] {e}')\n"
         ),
         md("### Helper package `lab22/` (same files as the repo)"),
     ]

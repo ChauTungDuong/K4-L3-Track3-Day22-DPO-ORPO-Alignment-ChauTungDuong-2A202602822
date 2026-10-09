@@ -49,3 +49,7 @@ hf_cache/
 .idea/
 .vscode/
 *.swp
+*.ps1
+huongdanlab22.txt
+ketqua/
+test_utf8.json

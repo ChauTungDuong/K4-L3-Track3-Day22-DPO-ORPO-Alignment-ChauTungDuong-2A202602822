@@ -41,6 +41,10 @@ assert (C.PREF_DIR / "train.parquet").exists(), "Run NB2 first"
 C.ensure_dirs()
 print(C.summary())
 
+DPO_DONE = (C.DPO_ADAPTER / "dpo_metrics.json").exists() and (C.SCREENSHOTS / "03-dpo-reward-curves.png").exists()
+if DPO_DONE:
+    print(f"==> [SKIP NB3] DPO adapter va metrics da ton tai tai {C.DPO_ADAPTER}. Bo qua huan luyen DPO!")
+
 # %% [markdown]
 # ## 1. Mô hình đang học (policy) = SFT đã gộp + LoRA mới
 #
@@ -49,37 +53,44 @@ print(C.summary())
 # với SFT chủ yếu đến từ việc giữ cả câu chosen lẫn rejected trong một batch.
 
 # %%
-model, tokenizer = MD.load_model(C.SFT_MERGED)
-model = MD.add_lora(model)
-
 from datasets import Dataset
 
 train_ds = Dataset.from_parquet(str(C.PREF_DIR / "train.parquet"))
 eval_ds = Dataset.from_parquet(str(C.PREF_DIR / "eval.parquet"))
 print(f"train={len(train_ds)} eval={len(eval_ds)}  columns={train_ds.column_names}")
 
+if DPO_DONE:
+    model, tokenizer = None, None
+    print("DPO adapter da ton tai, bo qua nap mo hinh de train lai.")
+else:
+    model, tokenizer = MD.load_model(C.SFT_MERGED)
+    model = MD.add_lora(model)
+
 # %% [markdown]
 # ## 2. Huấn luyện
 
 # %%
-from trl import DPOTrainer
+if DPO_DONE:
+    print("Bo qua buoc huan luyen DPO.")
+else:
+    from trl import DPOTrainer
 
-args = MD.dpo_config(C.ADAPTERS / "dpo-checkpoints")
-print(f"loss_type={args.loss_type} beta={args.beta} lr={args.learning_rate} "
-      f"precompute_ref={args.precompute_ref_log_probs} max_length={args.max_length}")
+    args = MD.dpo_config(C.ADAPTERS / "dpo-checkpoints")
+    print(f"loss_type={args.loss_type} beta={args.beta} lr={args.learning_rate} "
+          f"precompute_ref={args.precompute_ref_log_probs} max_length={args.max_length}")
 
-trainer = DPOTrainer(
-    model=model,
-    ref_model=None,
-    args=args,
-    train_dataset=train_ds,
-    eval_dataset=eval_ds,
-    processing_class=tokenizer,
-)
-result = trainer.train()
-final_eval = trainer.evaluate()
-print(f"train loss {result.training_loss:.4f} · held-out reward accuracy "
-      f"{final_eval.get('eval_rewards/accuracies', float('nan')):.3f}")
+    trainer = DPOTrainer(
+        model=model,
+        ref_model=None,
+        args=args,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
+        processing_class=tokenizer,
+    )
+    result = trainer.train()
+    final_eval = trainer.evaluate()
+    print(f"train loss {result.training_loss:.4f} · held-out reward accuracy "
+          f"{final_eval.get('eval_rewards/accuracies', float('nan')):.3f}")
 
 # %% [markdown]
 # ## 3. Đường cong reward (sản phẩm nộp `03-dpo-reward-curves.png`)
@@ -91,55 +102,63 @@ print(f"train loss {result.training_loss:.4f} · held-out reward accuracy "
 # Loss ở bước đầu phải gần 0.693 (NB0 §3). Nếu không, reference đang sai.
 
 # %%
-train_hist = MD.reward_history(trainer.state.log_history)
-eval_hist = MD.reward_history(trainer.state.log_history, prefix="eval_")
-title = f"DPO · {C.COMPUTE_TIER} · β={C.DPO_BETA} · lr={C.DPO_LR} · {'+'.join(C.DPO_LOSS)}"
-MD.plot_rewards(train_hist, eval_hist, title, C.SCREENSHOTS / "03-dpo-reward-curves.png")
+if not DPO_DONE:
+    train_hist = MD.reward_history(trainer.state.log_history)
+    eval_hist = MD.reward_history(trainer.state.log_history, prefix="eval_")
+    title = f"DPO · {C.COMPUTE_TIER} · β={C.DPO_BETA} · lr={C.DPO_LR} · {'+'.join(C.DPO_LOSS)}"
+    MD.plot_rewards(train_hist, eval_hist, title, C.SCREENSHOTS / "03-dpo-reward-curves.png")
 
-first_loss = next((r["loss"] for r in trainer.state.log_history if "loss" in r), None)
-print(f"first logged loss: {first_loss}")
+    first_loss = next((r["loss"] for r in trainer.state.log_history if "loss" in r), None)
+    print(f"first logged loss: {first_loss}")
 
 # %%
-label, message = MD.diagnose(eval_hist if len(eval_hist) >= 2 else train_hist)
-print(f"[{label}] {message}")
+if not DPO_DONE:
+    label, message = MD.diagnose(eval_hist if len(eval_hist) >= 2 else train_hist)
+    print(f"[{label}] {message}")
 
 # %% [markdown]
 # ## 4. Lưu adapter + metrics
 
 # %%
-import json
+if not DPO_DONE:
+    import json
 
-trainer.model.save_pretrained(str(C.DPO_ADAPTER))
-tokenizer.save_pretrained(str(C.DPO_ADAPTER))
-D.save_split_fingerprint(C.PREF_DIR, C.DPO_ADAPTER)  # NB4 refuses a held-out set this adapter saw
-
-
-def last(df, col):
-    return float(df[col].iloc[-1]) if not df.empty and col in df else None
+    trainer.model.save_pretrained(str(C.DPO_ADAPTER))
+    tokenizer.save_pretrained(str(C.DPO_ADAPTER))
+    D.save_split_fingerprint(C.PREF_DIR, C.DPO_ADAPTER)  # NB4 refuses a held-out set this adapter saw
 
 
-metrics = {
-    "compute_tier": C.COMPUTE_TIER,
-    "base_model": C.BASE_MODEL,
-    "reference": "models/sft-merged (precomputed)",
-    "pref_dataset": C.PREF_DATASET,
-    "beta": C.DPO_BETA,
-    "lr": C.DPO_LR,
-    "loss_type": C.DPO_LOSS,
-    "epochs": C.DPO_EPOCHS,
-    "final_train_loss": float(result.training_loss),
-    "first_logged_loss": first_loss,
-    "end_chosen_reward": last(train_hist, "rewards/chosen"),
-    "end_rejected_reward": last(train_hist, "rewards/rejected"),
-    "end_reward_gap": last(train_hist, "rewards/margins"),
-    "eval_chosen_reward": final_eval.get("eval_rewards/chosen"),
-    "eval_rejected_reward": final_eval.get("eval_rewards/rejected"),
-    "eval_reward_gap": final_eval.get("eval_rewards/margins"),
-    "eval_reward_accuracy": final_eval.get("eval_rewards/accuracies"),
-    "diagnosis": label,
-}
-(C.DPO_ADAPTER / "dpo_metrics.json").write_text(json.dumps(metrics, indent=2))
-print(json.dumps(metrics, indent=2))
+    def last(df, col):
+        return float(df[col].iloc[-1]) if not df.empty and col in df else None
+
+
+    metrics = {
+        "compute_tier": C.COMPUTE_TIER,
+        "base_model": C.BASE_MODEL,
+        "reference": "models/sft-merged (precomputed)",
+        "pref_dataset": C.PREF_DATASET,
+        "beta": C.DPO_BETA,
+        "lr": C.DPO_LR,
+        "loss_type": C.DPO_LOSS,
+        "epochs": C.DPO_EPOCHS,
+        "final_train_loss": float(result.training_loss),
+        "first_logged_loss": first_loss,
+        "end_chosen_reward": last(train_hist, "rewards/chosen"),
+        "end_rejected_reward": last(train_hist, "rewards/rejected"),
+        "end_reward_gap": last(train_hist, "rewards/margins"),
+        "eval_chosen_reward": final_eval.get("eval_rewards/chosen"),
+        "eval_rejected_reward": final_eval.get("eval_rewards/rejected"),
+        "eval_reward_gap": final_eval.get("eval_rewards/margins"),
+        "eval_reward_accuracy": final_eval.get("eval_rewards/accuracies"),
+        "diagnosis": label,
+    }
+    (C.DPO_ADAPTER / "dpo_metrics.json").write_text(json.dumps(metrics, indent=2))
+    print(json.dumps(metrics, indent=2))
+else:
+    print(f"DPO adapter metrics da co san tai: {C.DPO_ADAPTER}")
+
+if "sync_to_drive" in globals():
+    sync_to_drive("NB3_DPO")
 
 # %% [markdown]
 # ## 5. Ghi chú vibe-coding: quét β (+6 độ chặt chẽ)

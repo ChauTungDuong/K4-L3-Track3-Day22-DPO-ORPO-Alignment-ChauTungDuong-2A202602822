@@ -47,6 +47,10 @@ mismatch = D.split_mismatch(C.PREF_DIR, DPO_ADAPTER)
 assert mismatch is None, mismatch
 C.ensure_dirs()
 
+EVAL_DONE = (C.EVAL_DIR / "judge_summary.json").exists() and (C.SCREENSHOTS / "04-side-by-side-table.png").exists()
+if EVAL_DONE:
+    print(f"==> [SKIP NB4] Ket qua danh gia da ton tai tai {C.EVAL_DIR / 'judge_summary.json'}. Bo qua chay lai!")
+
 FIXED_PROMPTS = [
     {"id": "h1", "category": "helpfulness", "prompt": "Giải thích ngắn gọn (5-7 câu) cách thuật toán quicksort hoạt động."},
     {"id": "h2", "category": "helpfulness", "prompt": "Tôi có 5kg gạo và 12 quả trứng. Gợi ý 3 món có thể nấu cho 4 người, ngắn gọn."},
@@ -80,27 +84,35 @@ print(f"{len(FIXED_PROMPTS)} fixed + {len(heldout)} held-out prompts")
 # ## 1. Sinh câu trả lời (greedy, tức giải mã tham lam, cùng cấu hình cho cả hai mô hình)
 
 # %%
-texts = [p["prompt"] for p in PROMPTS]
+if EVAL_DONE:
+    print("Bo qua buoc sinh cau tra loi vi da co ket qua danh gia.")
+    records = []
+    if (C.EVAL_DIR / "side_by_side.jsonl").exists():
+        with open(C.EVAL_DIR / "side_by_side.jsonl", "r", encoding="utf-8") as f:
+            records = [json.loads(line) for line in f if line.strip()]
+    OUTPUTS_SHA = hashlib.sha256((C.EVAL_DIR / "side_by_side.jsonl").read_bytes()).hexdigest() if (C.EVAL_DIR / "side_by_side.jsonl").exists() else ""
+else:
+    texts = [p["prompt"] for p in PROMPTS]
 
-model, tokenizer = MD.load_model(C.SFT_MERGED)
-sft_out = MD.generate(model, tokenizer, texts)
-del model
-MD.cleanup()
+    model, tokenizer = MD.load_model(C.SFT_MERGED)
+    sft_out = MD.generate(model, tokenizer, texts)
+    del model
+    MD.cleanup()
 
-# The adapter config points at models/sft-merged, so this loads SFT + DPO.
-model, tokenizer = MD.load_model(DPO_ADAPTER)
-dpo_out = MD.generate(model, tokenizer, texts)
-del model
-MD.cleanup()
+    # The adapter config points at models/sft-merged, so this loads SFT + DPO.
+    model, tokenizer = MD.load_model(DPO_ADAPTER)
+    dpo_out = MD.generate(model, tokenizer, texts)
+    del model
+    MD.cleanup()
 
-records = [{**p, "sft": s, "dpo": d} for p, s, d in zip(PROMPTS, sft_out, dpo_out)]
-# New outputs invalidate the old summary; saved verdicts record which outputs they judged.
-(C.EVAL_DIR / "judge_summary.json").unlink(missing_ok=True)
-with open(C.EVAL_DIR / "side_by_side.jsonl", "w", encoding="utf-8") as f:
-    for r in records:
-        f.write(json.dumps(r, ensure_ascii=False) + "\n")
-OUTPUTS_SHA = hashlib.sha256((C.EVAL_DIR / "side_by_side.jsonl").read_bytes()).hexdigest()
-print(f"mean chars  SFT {sum(map(len, sft_out)) / len(sft_out):.0f}   DPO {sum(map(len, dpo_out)) / len(dpo_out):.0f}")
+    records = [{**p, "sft": s, "dpo": d} for p, s, d in zip(PROMPTS, sft_out, dpo_out)]
+    # New outputs invalidate the old summary; saved verdicts record which outputs they judged.
+    (C.EVAL_DIR / "judge_summary.json").unlink(missing_ok=True)
+    with open(C.EVAL_DIR / "side_by_side.jsonl", "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    OUTPUTS_SHA = hashlib.sha256((C.EVAL_DIR / "side_by_side.jsonl").read_bytes()).hexdigest()
+    print(f"mean chars  SFT {sum(map(len, sft_out)) / len(sft_out):.0f}   DPO {sum(map(len, dpo_out)) / len(dpo_out):.0f}")
 
 # %% [markdown]
 # ## 2. Bảng 8 câu hỏi cố định (sản phẩm nộp `04-side-by-side-table.png`)
@@ -158,74 +170,83 @@ plt.show()
 # `side_by_side.jsonl` (sinh greedy nên thường trùng giữa các lần chạy).
 
 # %%
-provider = C.JUDGE_PROVIDER
-if provider != "rm" and not J.has_judge_key(provider):
-    print(f"JUDGE_PROVIDER={provider} but its API key is missing → local reward-model panel.")
-    provider = "rm"
-
-sanity, per_judge = {}, {}
-if provider == "rm":
-    for name in C.JUDGE_RM_MODELS:
-        score = J.make_rm_scorer(name)
-        sanity[name] = J.sanity_accuracy(score)
-        print(f"{name}: Vietnamese sanity {sanity[name]:.0%} of {len(J.SANITY_PAIRS)} obvious pairs")
-        per_judge[name] = [{**r, **J.rm_judge_pair(r["prompt"], r["sft"], r["dpo"], score)} for r in records]
-        del score
-        MD.cleanup()
-    panel = [n for n in per_judge if sanity[n] >= 0.8] or list(per_judge)
-    if len(panel) < len(per_judge):
-        print(f"Dropped from the panel (sanity < 80%): {sorted(set(per_judge) - set(panel))}")
-    if min(sanity[n] for n in panel) < 0.8:
-        print("WARNING: no reward model passes the Vietnamese sanity set; treat verdicts with caution.")
-    judged = [
-        {**r, **J.panel_record([per_judge[n][i] for n in panel])} for i, r in enumerate(records)
-    ]
-    judge_name, kind = "rm-panel:" + "+".join(panel), "rm"
+if EVAL_DONE:
+    print("Bo qua buoc cham vi da co ket qua judge.")
 else:
-    call = J.make_caller(provider, C.JUDGE_MODEL)
-    judged = [{**r, **J.judge_pair(r["prompt"], r["sft"], r["dpo"], call)} for r in records]
-    judge_name, kind = f"{provider}:{C.JUDGE_MODEL}", "api"
-(C.EVAL_DIR / f"judge_results_{kind}.json").write_text(
-    json.dumps(
-        {"judge": judge_name, "outputs_sha256": OUTPUTS_SHA, "records": judged, "per_judge": per_judge},
-        ensure_ascii=False,
-        indent=2,
+    provider = C.JUDGE_PROVIDER
+    if provider != "rm" and not J.has_judge_key(provider):
+        print(f"JUDGE_PROVIDER={provider} but its API key is missing → local reward-model panel.")
+        provider = "rm"
+
+    sanity, per_judge = {}, {}
+    if provider == "rm":
+        for name in C.JUDGE_RM_MODELS:
+            score = J.make_rm_scorer(name)
+            sanity[name] = J.sanity_accuracy(score)
+            print(f"{name}: Vietnamese sanity {sanity[name]:.0%} of {len(J.SANITY_PAIRS)} obvious pairs")
+            per_judge[name] = [{**r, **J.rm_judge_pair(r["prompt"], r["sft"], r["dpo"], score)} for r in records]
+            del score
+            MD.cleanup()
+        panel = [n for n in per_judge if sanity[n] >= 0.8] or list(per_judge)
+        if len(panel) < len(per_judge):
+            print(f"Dropped from the panel (sanity < 80%): {sorted(set(per_judge) - set(panel))}")
+        if min(sanity[n] for n in panel) < 0.8:
+            print("WARNING: no reward model passes the Vietnamese sanity set; treat verdicts with caution.")
+        judged = [
+            {**r, **J.panel_record([per_judge[n][i] for n in panel])} for i, r in enumerate(records)
+        ]
+        judge_name, kind = "rm-panel:" + "+".join(panel), "rm"
+    else:
+        call = J.make_caller(provider, C.JUDGE_MODEL)
+        judged = [{**r, **J.judge_pair(r["prompt"], r["sft"], r["dpo"], call)} for r in records]
+        judge_name, kind = f"{provider}:{C.JUDGE_MODEL}", "api"
+    (C.EVAL_DIR / f"judge_results_{kind}.json").write_text(
+        json.dumps(
+            {"judge": judge_name, "outputs_sha256": OUTPUTS_SHA, "records": judged, "per_judge": per_judge},
+            ensure_ascii=False,
+            indent=2,
+        )
     )
-)
 
 # %% [markdown]
 # ## 4. Tổng hợp
 
 # %%
-def splits(rows: list[dict]) -> dict:
-    return {
-        "overall": J.summarize(rows, seed=C.SEED),
-        **{c: J.summarize([r for r in rows if r["category"] == c], seed=C.SEED) for c in ("heldout", "helpfulness", "safety")},
+if not EVAL_DONE:
+    def splits(rows: list[dict]) -> dict:
+        return {
+            "overall": J.summarize(rows, seed=C.SEED),
+            **{c: J.summarize([r for r in rows if r["category"] == c], seed=C.SEED) for c in ("heldout", "helpfulness", "safety")},
+        }
+
+
+    summary = {
+        "judge": judge_name,
+        "outputs_sha256": OUTPUTS_SHA,
+        # The weakest panel member; verify.py warns below 0.8.
+        "sanity_accuracy": min(sanity[n] for n in panel) if sanity else None,
+        "sanity": sanity or None,
+        **splits(judged),
     }
+    if per_judge:
+        summary["per_judge"] = {n: J.summarize([r for r in rows if r["category"] == "heldout"], seed=C.SEED) for n, rows in per_judge.items()}
+        names = list(per_judge)
+        if len(names) >= 2:
+            summary["judge_agreement"] = {"judges": names[:2], **J.agreement(per_judge[names[0]], per_judge[names[1]])}
+    other = C.EVAL_DIR / f"judge_results_{'api' if kind == 'rm' else 'rm'}.json"
+    if other.exists():
+        saved = json.loads(other.read_text())
+        if saved.get("outputs_sha256") == OUTPUTS_SHA:  # greedy outputs usually repeat across runs
+            summary["cross_judge"] = {"other_judge": saved["judge"], **J.agreement(judged, saved["records"])}
+        else:
+            print(f"{other.name} judged different outputs: no cross-judge agreement reported.")
+    (C.EVAL_DIR / "judge_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+else:
+    print(f"Ket qua judge da co san tai: {C.EVAL_DIR / 'judge_summary.json'}")
 
-
-summary = {
-    "judge": judge_name,
-    "outputs_sha256": OUTPUTS_SHA,
-    # The weakest panel member; verify.py warns below 0.8.
-    "sanity_accuracy": min(sanity[n] for n in panel) if sanity else None,
-    "sanity": sanity or None,
-    **splits(judged),
-}
-if per_judge:
-    summary["per_judge"] = {n: J.summarize([r for r in rows if r["category"] == "heldout"], seed=C.SEED) for n, rows in per_judge.items()}
-    names = list(per_judge)
-    if len(names) >= 2:
-        summary["judge_agreement"] = {"judges": names[:2], **J.agreement(per_judge[names[0]], per_judge[names[1]])}
-other = C.EVAL_DIR / f"judge_results_{'api' if kind == 'rm' else 'rm'}.json"
-if other.exists():
-    saved = json.loads(other.read_text())
-    if saved.get("outputs_sha256") == OUTPUTS_SHA:  # greedy outputs usually repeat across runs
-        summary["cross_judge"] = {"other_judge": saved["judge"], **J.agreement(judged, saved["records"])}
-    else:
-        print(f"{other.name} judged different outputs: no cross-judge agreement reported.")
-(C.EVAL_DIR / "judge_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
-print(json.dumps(summary, ensure_ascii=False, indent=2))
+if "sync_to_drive" in globals():
+    sync_to_drive("NB4_Compare_And_Eval")
 
 # %% [markdown]
 # ## 5. Đọc kết quả
